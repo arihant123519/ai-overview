@@ -17,6 +17,7 @@ use App\Models\HistoryLog;
 use App\Models\KeywordPlanner;
 use App\Models\KeywordRequest;
 use App\Models\MedianFetch;
+use App\Models\MedianInfo;
 use App\Models\OrganicResult;
 use App\Models\ParentKeyword;
 use App\Models\RelatedQuestions;
@@ -29,6 +30,7 @@ use Google\Client;
 use Illuminate\Http\Request;
 use Google\Service\Webmasters;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cookie;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -120,12 +122,6 @@ class KeywordAnalysisController extends Controller
             $request->session()->flash("error", "Unable to add client. Please try again later");
         }
     }
-    public function searchKeyword()
-    {
-        $keyword = "hair transplant";
-        $keyplan = $this->kpService->searchKeywords($keyword, 5);
-        dd($keyplan);
-    }
 
     public function keywordStore(Request $request)
     {
@@ -133,7 +129,7 @@ class KeywordAnalysisController extends Controller
 
         $url = $request->domain_name;
         $keyword = $request->master_keyword; // Changed from $request->keyword to $request->master_keyword
-        $limit =40;
+        $limit =50; 
         $median_limit = $request->limit;
         // 1. First store or get the KeywordRequest
         $info = [
@@ -195,14 +191,57 @@ class KeywordAnalysisController extends Controller
             $isFullResults = ($totalKeywords >= $limit);
             $remainingKeywords = $limit - $totalKeywords;
         } else {
-            $keyplan = $this->kpService->searchKeywords($keyword, $limit);
+            $keyplan = $this->kpService->searchKeywords($keyword, $limit, $request->date_from ?? null, $request->date_to ?? null, ['2840'], '1000', $request->client_property_id);
+            
+            unset($filters['date_from'], $filters['date_to']);
             if (!empty($filters)) {
                 $keyplan = $this->applyFilters($keyplan, $filters);
             }
         }
 
-        // dd($keyplan);
 
+        $storedKeywords = [];
+        foreach ($keyplan as $keywordData) {
+            // Check if the keyword already exists for this request
+            $existingKeywordPlanner = KeywordPlanner::where('keyword_p', $keywordData['keyword'])
+                ->where('keyword_request_id', $keyword_request->id)
+                ->first();
+            
+            if($existingKeywordPlanner){
+            // Update existing record
+                $existingKeywordPlanner->update([
+                    'monthlysearch_p' => $keywordData['avg_monthly_searches'] ?? $existingKeywordPlanner->monthlysearch_p,
+                    'competition_p' => $keywordData['competition'] ?? $existingKeywordPlanner->competition_p,
+                    'low_bid_p' => $keywordData['low_top_of_page_bid'] ?? $existingKeywordPlanner->low_bid_p,
+                    'high_bid_p' => $keywordData['high_top_of_page_bid'] ?? $existingKeywordPlanner->high_bid_p,
+                    'monthlysearchvolume_p' => null,
+                    'clicks_p' => $keywordData['clicks'] ?? $existingKeywordPlanner->clicks_p,
+                    'ctr_p' => $keywordData['ctr'] ?? $existingKeywordPlanner->ctr_p,
+                    'impressions_p' => $keywordData['impressions'] ?? $existingKeywordPlanner->impressions_p,
+                    'position_p' => $keywordData['position'] ?? $existingKeywordPlanner->position_p,
+                ]);
+            }else{
+
+                KeywordPlanner::create([
+                    'domainmanagement_id' => $info['domainmanagement_id'],
+                    'client_property_id' => $info['client_property_id'],
+                    'keyword_request_id' => $keyword_request->id,
+                    'keyword_p' => $keywordData['keyword'],
+                    'monthlysearch_p' => $keywordData['avg_monthly_searches'] ?? null,
+                    'competition_p' => $keywordData['competition'] ?? null,
+                    'low_bid_p' => $keywordData['low_top_of_page_bid'] ?? null,
+                    'high_bid_p' => $keywordData['high_top_of_page_bid'] ?? null,
+                    'monthlysearchvolume_p' => null,
+                    'clicks_p' => $keywordData['clicks'] ?? null,
+                    'ctr_p' => $keywordData['ctr'] ?? null,
+                    'impressions_p' => $keywordData['impressions'] ?? null,
+                    'position_p' => $keywordData['position'] ?? null,
+                ]);
+            }
+                
+                $storedKeywords[] = $existingKeywordPlanner;
+        }
+ 
         $extractedKeywords = array_map(function ($item) {
             return $item['keyword'] ?? $item['query'] ?? '';
         }, $keyplan);
@@ -890,35 +929,49 @@ class KeywordAnalysisController extends Controller
     // }
 
     public function keywordAnalysis($domainmanagement_id, $client_property_id, $id)
-    {
-        $organicResultsData = [];
-        $relatedQuestionsData = [];
-        $adsData = [];
+{
+    $keywordRequest = KeywordRequest::where([
+        'id' => $id,
+        'domainmanagement_id' => $domainmanagement_id,
+        'client_property_id' => $client_property_id
+    ])->first();
 
-        $keywordRequest = KeywordRequest::where([
-            'id' => $id,
-            'domainmanagement_id' => $domainmanagement_id,
-            'client_property_id' => $client_property_id
-        ])->first();
-        // $keywordplanner = KeywordPlanner::where('keyword_request_id', $id)->get();
-        $keywordplanner = KeywordPlanner::leftJoin(
-            'cluster_request',
-            'cluster_request.id',
-            '=',
-            'keyword_planner.cluster_request_id'
+    $keywordplanner = KeywordPlanner::leftJoin(
+        'cluster_request',
+        'cluster_request.id',
+        '=',
+        'keyword_planner.cluster_request_id'
+    )
+        ->where('keyword_planner.keyword_request_id', $id)
+        ->select(
+            'cluster_request.date_from as cluster_request_date_from',
+            'cluster_request.date_to as cluster_request_date_to',
+            'keyword_planner.*',
+            // Check if organic_results has a record for this keyword_planner_id
+            DB::raw('EXISTS(
+                SELECT 1 FROM organic_results
+                WHERE organic_results.keyword_planner_id = keyword_planner.id
+            ) as has_organic_results'),
+            // Check if ai_overview has a record for this keyword_planner_id
+            DB::raw('EXISTS(
+                SELECT 1 FROM ai_overview
+                WHERE ai_overview.keyword_planner_id = keyword_planner.id
+            ) as has_ai_overview'),
+            // Check if related_questions has a record for this keyword_planner_id
+            DB::raw('EXISTS(
+                SELECT 1 FROM related_questions
+                WHERE related_questions.keyword_planner_id = keyword_planner.id
+            ) as has_related_questions'),
+            // Check if related_searches has a record for this keyword_planner_id
+            DB::raw('EXISTS(
+                SELECT 1 FROM related_searches
+                WHERE related_searches.keyword_planner_id = keyword_planner.id
+            ) as has_related_searches')
         )
-            ->where('keyword_planner.keyword_request_id', $id)
-            ->select(
-                'cluster_request.date_from as cluster_request_date_from',
-                'cluster_request.date_to as cluster_request_date_to',
-                'keyword_planner.*'
-            )
-            ->get();
+        ->get();
 
-        // dd($keywordRequestdata->toArray());
-
-        return view('keyword-analysis.keyword-analysis', compact('keywordRequest', 'keywordplanner'));
-    }
+    return view('keyword-analysis.keyword-analysis', compact('keywordRequest', 'keywordplanner'));
+}
 
     public function extractedAioResult($keyword_planner_id, $history_log_id = null)
     {
@@ -1933,9 +1986,9 @@ Your task is to:
         try {
             // Fetch related keywords from Keyword Planner
             if ($dateFrom && $dateTo) {
-                $relatedKeywords = $this->kpService->searchKeywords($masterKeyword, $limit, $dateFrom, $dateTo);
+                $relatedKeywords = $this->kpService->searchKeywords($masterKeyword, $limit, $dateFrom, $dateTo, $clientPropertyId);
             } else {
-                $relatedKeywords = $this->kpService->searchKeywords($masterKeyword, $limit);
+                $relatedKeywords = $this->kpService->searchKeywords($masterKeyword, $limit, null, null, $clientPropertyId);
             }
             foreach ($relatedKeywords as $relatedKeyword) {
                 $keyword = $relatedKeyword['keyword'] ?? '';
@@ -2778,7 +2831,6 @@ Your task is to:
 
         // Run the artisan command directly
         // For Laravel 7.x and above
-        // Artisan::call('queue:restart');
         Artisan::call('optimize:clear');
         Artisan::call('cache:clear');
         Artisan::call('config:clear');
@@ -2795,20 +2847,58 @@ Your task is to:
 
         return response()->json(['status' => 'success', 'output' => $output]);
     }
+    
+    public function syncQueue(Request $request)
+    {
+        try {
+            Artisan::call('queue:work', [
+                '--stop-when-empty' => true,
+                '--timeout'         => 360,
+                '--tries'           => 3,
+            ]);
+
+            $output = Artisan::output();
+
+            Log::info('Queue sync triggered via HTTP. Output: ' . $output);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Queue sync completed successfully.',
+                'output'  => $output,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Queue sync error: ' . $e->getMessage());
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Queue sync failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
 
     public static function printAllTables()
     {
-        DB::table('generated_prompts')->truncate();
-        // DB::table('keyword_planner')->whereIn('id', [176, 175])->delete();
+        // DB::table('keyword_planner')->where('keyword_request_id', 7)->delete();
+        // DB::table('median-fetch')->delete();
+        // DB::table('median_info')->delete();
         // MedianFetch
-        dd('asas');
+        // dd("que");
 
-        $jobs = DB::table('median-fetch')->get();
-        foreach ($jobs as $job) {
+        
+        $jobs1 = DB::table('median-fetch')->get();
+        foreach ($jobs1 as $job) {
             echo "<pre>";
             print_r($job);
             echo "</pre>";
         }
+
+        // $jobs = DB::table('median_info')->get();
+        // foreach ($jobs as $job) {
+        //     echo "<pre>";
+        //     print_r($job);
+        //     echo "</pre>";
+        // }
         $tables = DB::select('SHOW TABLES');
         $databaseName = DB::getDatabaseName();
         $key = 'Tables_in_' . $databaseName;
@@ -3157,6 +3247,13 @@ Your task is to:
         $remaininglimit = (int) $request->remaining_limit;
         $currentextracted = (int) $request->current_extracted;
         Log::info($remaininglimit." + ".$currentextracted);
+        $info = [
+            'client_property_id' => $request->client_property_id,
+            'domainmanagement_id' => $request->domainmanagement_id,
+            'keyword' => $request->master_keyword ?? $url, // Use master_keyword if available, otherwise use URL
+            'domain_name' => $request->domain_name,
+            'master_keyword' => $request->master_keyword ?? null,
+        ];
 
         $keyword_request_id = session('keyword_request_id');
         $sessionId = session()->getId();
@@ -3173,8 +3270,52 @@ Your task is to:
         } else {
             $additionalKeywords = $this->kpService->searchKeywords(
                 $keyword,
-                $remaininglimit + $currentextracted
+                $remaininglimit + $currentextracted,
+                null,
+                null,
+                $request->client_property_id
             );
+        }
+        $storedKeywords = [];
+        foreach ($additionalKeywords as $keywordData) {
+            // Check if the keyword already exists for this request
+            $existingKeywordPlanner = KeywordPlanner::where('keyword_p', $keywordData['keyword'])
+                ->where('keyword_request_id', $keyword_request_id)
+                ->first();
+            
+            if($existingKeywordPlanner){
+            // Update existing record
+                $existingKeywordPlanner->update([
+                    'monthlysearch_p' => $keywordData['avg_monthly_searches'] ?? $existingKeywordPlanner->monthlysearch_p,
+                    'competition_p' => $keywordData['competition'] ?? $existingKeywordPlanner->competition_p,
+                    'low_bid_p' => $keywordData['low_top_of_page_bid'] ?? $existingKeywordPlanner->low_bid_p,
+                    'high_bid_p' => $keywordData['high_top_of_page_bid'] ?? $existingKeywordPlanner->high_bid_p,
+                    'monthlysearchvolume_p' => null, 
+                    'clicks_p' => $keywordData['clicks'] ?? $existingKeywordPlanner->clicks_p,
+                    'ctr_p' => $keywordData['ctr'] ?? $existingKeywordPlanner->ctr_p,
+                    'impressions_p' => $keywordData['impressions'] ?? $existingKeywordPlanner->impressions_p,
+                    'position_p' => $keywordData['position'] ?? $existingKeywordPlanner->position_p,
+                ]);
+            }else{
+
+                KeywordPlanner::create([
+                    'domainmanagement_id' => $info['domainmanagement_id'],
+                    'client_property_id' => $info['client_property_id'],
+                    'keyword_request_id' => $keyword_request_id,
+                    'keyword_p' => $keywordData['keyword'],
+                    'monthlysearch_p' => $keywordData['avg_monthly_searches'] ?? null,
+                    'competition_p' => $keywordData['competition'] ?? null,
+                    'low_bid_p' => $keywordData['low_top_of_page_bid'] ?? null,
+                    'high_bid_p' => $keywordData['high_top_of_page_bid'] ?? null,
+                    'monthlysearchvolume_p' => null,
+                    'clicks_p' => $keywordData['clicks'] ?? null,
+                    'ctr_p' => $keywordData['ctr'] ?? null,
+                    'impressions_p' => $keywordData['impressions'] ?? null,
+                    'position_p' => $keywordData['position'] ?? null,
+                ]);
+            }
+                
+                $storedKeywords[] = $existingKeywordPlanner;
         }
         // dd($additionalKeywords);
         Log::info("additionalKeywords: ".count($additionalKeywords));
@@ -3304,7 +3445,7 @@ Your task is to:
             $additionalKeywords = $this->getEnrichedSearchAnalytics($url, $remaininglimit + $currentextracted, $request->date_from, $request->date_to);
         } else {
             // For keyword-based searches
-            $additionalKeywords = $this->kpService->searchKeywords($keyword, $remaininglimit + $currentextracted, $request->date_from, $request->date_to);
+            $additionalKeywords = $this->kpService->searchKeywords($keyword, $remaininglimit + $currentextracted, $request->date_from, $request->date_to, $request->client_property_id);
         }
 
         // Apply filters if provided
@@ -3369,40 +3510,75 @@ Your task is to:
     }
     public function keywordmediansave(Request $request)
     {
-
+ 
         $rows = $request->input('rows');
-
+ 
         if (!$rows || !is_array($rows)) {
             return response()->json([
                 'success' => false,
                 'message' => 'No data received'
             ]);
         }
-
+ 
         try {
-            
-            MedianFetch::where([
-                'client_property_id'   => $request->client_property_id,
-                'domainmanagement_id'  => $request->domainmanagement_id,
-                'keyword_request_id'   => $request->keyword_request_id,
-            ])->update(['bucket' => 0]);
+            $newMedianName = $request->median_name;
+            $medianInfoId = Cookie::get('median_info_id');
+ 
+            // Find the most recent "Unsaved Bucket N" MedianInfo record for this
+            // client/domain/request — this is the one we are about to officially name.
+            $medianInfo = MedianInfo::find($medianInfoId);
+
+            if (!$medianInfo) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'MedianInfo not found.',
+                    'message' => 'No unsaved bucket found to rename. Please trigger an auto-save first.',
+                ]);
+            }
+ 
+            // The MedianFetch rows link back via median_name = median_info.id (as string).
+            // Renaming MedianInfo does NOT require touching MedianFetch.median_name at all —
+            // the ID stays the same, so the link remains intact.
+            $medianInfo->update(['median_name' => $newMedianName]);
+
             foreach ($rows as $row) {
-                
+ 
                 $keywordplanner = KeywordPlanner::where([
                     ['keyword_p', $row['keyword']],
                     ['keyword_request_id', $request->keyword_request_id],
                     ['client_property_id', $request->client_property_id],
                     ['domainmanagement_id', $request->domainmanagement_id]
                 ])->first();
+ 
+                if (!$keywordplanner) continue;
+ 
+                // Reset bucket for all MedianFetch rows belonging to this MedianInfo
                 MedianFetch::where([
-                    'client_property_id'   => $request->client_property_id,
-                    'domainmanagement_id'  => $request->domainmanagement_id,
-                    'keyword_request_id'   => $request->keyword_request_id,
-                    'keyword_p'            => $keywordplanner->id,
-                ])->update(['bucket' => 1,'median_name'=>$request->median_name]);
+                    'client_property_id'  => $request->client_property_id,
+                    'domainmanagement_id' => $request->domainmanagement_id,
+                    'keyword_request_id'  => $request->keyword_request_id,
+                    'keyword_p'           => $keywordplanner->id,
+                    'median_name'         => (string) $medianInfoId,   // matches via median_info.id
+                ])->update(['bucket' => 0]);
+ 
+                // Mark the selected keyword as bucket=1
+                MedianFetch::where([
+                    'client_property_id'  => $request->client_property_id,
+                    'domainmanagement_id' => $request->domainmanagement_id,
+                    'keyword_request_id'  => $request->keyword_request_id,
+                    'keyword_p'           => $keywordplanner->id,
+                    'median_name'         => (string) $medianInfoId,
+                ])->update(['bucket' => 1]);
             }
-
-            return response()->json(['success' => true]);
+ 
+            // No sweep needed: MedianFetch.median_name stores the MedianInfo.id,
+            // which never changes — only MedianInfo.median_name was renamed above.
+ 
+            return response()->json([
+                'success'        => true,
+                'median_name'    => $newMedianName,
+                'median_info_id' => (int) $medianInfoId,
+            ]);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -3419,8 +3595,35 @@ Your task is to:
                 'message' => 'No data received'
             ]);
         }
-
+ 
         try {
+            // Count existing "Unsaved Bucket N" records for this client/domain/request
+            // and create the next one in the sequence (N+1).
+            // firstOrCreate is used so that a retry with the same name never duplicates.
+            $existingCount = MedianInfo::where([
+                'client_property_id'  => $request->client_property_id,
+                'domainmanagement_id' => $request->domainmanagement_id,
+                'keyword_request_id'  => $request->keyword_request_id,
+            ])->where('median_name', 'LIKE', 'Unsaved Bucket%')->count();
+ 
+            $tempName = 'Unsaved Bucket ' . ($existingCount + 1);
+ 
+            // firstOrCreate: if this exact temp name already exists (e.g. retry), reuse it;
+            // otherwise create a fresh MedianInfo row — never duplicate, never overwrite.
+            $median_info = MedianInfo::firstOrCreate([
+                'client_property_id'  => $request->client_property_id,
+                'domainmanagement_id' => $request->domainmanagement_id,
+                'keyword_request_id'  => $request->keyword_request_id,
+                'median_name'         => $tempName,
+            ], [
+                'date_from' => $request->date_from,
+                'date_to'   => $request->date_to,
+            ]);
+ 
+            // Store median_info.id in MedianFetch.median_name to act as the FK link.
+            // This way renaming MedianInfo later never requires touching these rows.
+            $medianInfoId = (string) $median_info->id;
+ 
             foreach ($rows as $row) {
                 $keywordplanner = KeywordPlanner::where([
                     ['keyword_p', $row['keyword']],
@@ -3428,27 +3631,37 @@ Your task is to:
                     ['client_property_id', $request->client_property_id],
                     ['domainmanagement_id', $request->domainmanagement_id]
                 ])->first();
-                MedianFetch::updateOrCreate([
-                    'client_property_id'   => $request->client_property_id,
-                    'domainmanagement_id'  => $request->domainmanagement_id,
-                    'keyword_request_id'   => $request->keyword_request_id,
-                    'keyword_p'            => $keywordplanner->id,
-                ], [
-                    'date_from'           => $request->date_from,
-                    'date_to'             => $request->date_to,
-                    'bucket' => 0,
-                    'monthlysearch_p'     => $row['monthly_search'] ?? 0,
-                    'competition_p'       => $row['competition'] ?? null,
-                    'low_bid_p'           => $row['low_bid'] ?? 0,
-                    'high_bid_p'          => $row['high_bid'] ?? 0,
-                    'clicks_p'            => $row['clicks'] ?? 0,
-                    'ctr_p'               => $row['ctr'] ?? 0,
-                    'impressions_p'       => $row['impressions'] ?? 0,
-                    'position_p'          => $row['position'] ?? 0,
+ 
+                if (!$keywordplanner) {
+                    Log::warning("autokeywordmediansave: keyword_planner not found for keyword: " . ($row['keyword'] ?? 'N/A'));
+                    continue;
+                }
+ 
+                MedianFetch::create([
+                    'client_property_id'  => $request->client_property_id,
+                    'domainmanagement_id' => $request->domainmanagement_id,
+                    'keyword_request_id'  => $request->keyword_request_id,
+                    'keyword_p'           => $keywordplanner->id,
+                    'median_name'     => $medianInfoId,
+                    'date_from'       => $request->date_from,
+                    'date_to'         => $request->date_to,
+                    'bucket'          => 0,
+                    'monthlysearch_p' => $row['monthly_search'] ?? 0,
+                    'competition_p'   => $row['competition'] ?? null,
+                    'low_bid_p'       => $row['low_bid'] ?? 0,
+                    'high_bid_p'      => $row['high_bid'] ?? 0,
+                    'clicks_p'        => $row['clicks'] ?? 0,
+                    'ctr_p'           => $row['ctr'] ?? 0,
+                    'impressions_p'   => $row['impressions'] ?? 0,
+                    'position_p'      => $row['position'] ?? 0,
                 ]);
             }
-
-            return response()->json(['success' => true]);
+ 
+            return response()->json([
+                'success'        => true,
+                'temp_name'      => $tempName,
+                'median_info_id' => $median_info->id,
+            ])->cookie('median_info_id', $median_info->id, 1440);;
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -3456,6 +3669,9 @@ Your task is to:
             ]);
         }
     }
+
+
+
     public function getEnrichedSearchAnalytics($propertyUrl, $limit, $startDate = null, $endDate = null)
     {
         try {
@@ -3748,6 +3964,348 @@ public function checkKeywordPlannerStatus(Request $request)
         ], 500);
     }
 }
+    public function aio_domain_api(Request $request)
+{
+    try {
+        $domain = $request->input('domain');
+        $keyword = $request->input('keyword');
+        $limit = $request->input('limit', 20);
+        $page = $request->input('page', 1);
+        
+        // Validate that either domain or keyword is provided
+        if (!$domain && !$keyword) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Either domain or keyword parameter is required'
+            ], 400);
+        }
+                
+        $client_property_id = $domain ? Client_propertiesModel::where('domain','LIKE', "%".$request->input('domain')."%")->value('id') : $request->input('client_property_id');
+        
+        // Calculate offset
+        $offset = ($page - 1) * $limit;
+        
+        // Generate a unique session ID for this request
+        $sessionId = uniqid('aio_domain_', true);
+        
+        $keywords = [];
+        $totalKeywords = 0;
+        $sourceType = ($domain && !$keyword) ? 'domain' : 'keyword';
+        
+        if ($domain && !$keyword) {
+            // Fetch keywords from GSC for domain
+            Log::info("Fetching GSC keywords for domain: {$domain}");
+            $gscKeywords = $this->gscService->getKeywordsByClicks($domain, $limit + $offset);
+            
+            if (empty($gscKeywords)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No keywords found in Google Search Console for this domain'
+                ], 404);
+            }
 
+            // Get total count for pagination
+            $totalKeywords = count($gscKeywords);
+            
+            // Extract keywords with UTF-8 cleaning
+            $allKeywords = array_map(function($item) {
+                $keyword = $item['query'] ?? $item['keyword'] ?? '';
+                return $this->cleanUtf8String($keyword);
+            }, $gscKeywords);
+            
+            // Apply pagination - get only the keywords for current page
+            $keywords = array_slice($allKeywords, $offset, $limit);
+            
+        } else {
+            // Fetch related keywords from Keyword Planner for the given keyword
+            Log::info("Fetching related keywords for keyword: {$keyword}");
+            
+            // Get related keywords from Keyword Planner service
+            // dd($client_property_id);
+            $relatedKeywords = $this->kpService->searchKeywords($keyword, $limit + $offset, null, null, ['2840'], '1000', $client_property_id);
+            if (empty($relatedKeywords)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No related keywords found for the provided keyword'
+                ], 404);
+            }
+
+            // Get total count for pagination
+            $totalKeywords = count($relatedKeywords);
+            
+            // Extract keywords with UTF-8 cleaning
+            $allKeywords = array_map(function($item) {
+                $keyword = $item['keyword'] ?? '';
+                return $this->cleanUtf8String($keyword);
+            }, $relatedKeywords);
+            
+            // Apply pagination - get only the keywords for current page
+            $keywords = array_slice($allKeywords, $offset, $limit);
+        }
+        
+        // If no keywords for this page
+        if (empty($keywords)) {
+            return response()->json([
+                'success' => false,
+                'message' => "No keywords found for page {$page}",
+                'source_type' => $sourceType,
+                'source_value' => $domain ?: $keyword,
+                'pagination' => $this->generatePagination($domain, $keyword, $page, $limit, $totalKeywords)
+            ], 404);
+        }
+
+        Log::info("Processing page {$page} with " . count($keywords) . " keywords (offset: {$offset}) from {$sourceType}: " . ($domain ?: $keyword));
+
+        // Initialize results array
+        $results = [];
+        foreach ($keywords as $index => $kw) {
+            $globalIndex = (int)$offset + (int)$index;
+            $results[$index] = [
+                'serial_no' => $globalIndex,
+                'keyword' => $this->cleanUtf8String($kw),
+                'search_api_status' => 'Processing',
+                'aio_status' => 'Processing',
+                'client_mentioned_status' => 'Processing',
+            ];
+        }
+
+        // Start processing with timeout
+        $startTime = time();
+        $processedCount = 0;
+        $totalKeywordsOnPage = count($keywords);
+
+        // Process keywords with timeout
+        foreach ($keywords as $index => $kw) {
+            try {
+                Log::info("Processing keyword {$index} on page {$page}: {$kw}");
+                
+                // Fetch search results
+                $searchJson = GeneralHelper::getSearchResult($kw);
+                $searchData = json_decode($searchJson, true);
+                
+                if (!$searchData) {
+                    $results[$index]['search_api_status'] = 'Error';
+                    $results[$index]['aio_status'] = 'Error';
+                    $results[$index]['client_mentioned_status'] = 'Error';
+                    $results[$index]['error'] = 'Failed to fetch search results';
+                    $processedCount++;
+                    continue;
+                }
+
+                // Clean search data
+                $searchData = $this->cleanUtf8Array($searchData);
+
+                // Check for AI Overview
+                $hasAio = false;
+                $aiOverviewData = null;
+                
+                if (isset($searchData['ai_overview'])) {
+                    if (!isset($searchData['ai_overview']['page_token'])) {
+                        $aiOverviewData = $searchData['ai_overview'];
+                        $hasAio = !empty($aiOverviewData['markdown']) || !empty($aiOverviewData['text_blocks']);
+                    } else {
+                        // Fetch full AIO data if there's a page token
+                        $aioJson = GeneralHelper::getaioResult($searchData['ai_overview']['page_token']);
+                        $aiOverviewData = json_decode($aioJson, true);
+                        $hasAio = !empty($aiOverviewData['markdown']) || !empty($aiOverviewData['text_blocks']);
+                    }
+                    
+                    // Clean AI overview data
+                    if ($aiOverviewData) {
+                        $aiOverviewData = $this->cleanUtf8Array($aiOverviewData);
+                    }
+                }
+
+                // Check if client is mentioned in AI Overview
+                $clientMentioned = false;
+                if ($hasAio && $aiOverviewData && $domain) {
+                    // Only check client mention if domain is provided
+                    // Extract domain from URL for comparison
+                    $parsedDomain = parse_url($domain, PHP_URL_HOST);
+                    if (!$parsedDomain) {
+                        $parsedDomain = $domain;
+                    }
+                    
+                    // Check if domain appears in AI Overview content
+                    $aioContent = json_encode($aiOverviewData);
+                    $clientMentioned = stripos($aioContent, $parsedDomain) !== false;
+                    
+                    // Also check in markdown if available
+                    if (!$clientMentioned && isset($aiOverviewData['markdown'])) {
+                        $clientMentioned = stripos($aiOverviewData['markdown'], $parsedDomain) !== false;
+                    }
+                    
+                    // Check in text blocks if available
+                    if (!$clientMentioned && isset($aiOverviewData['text_blocks']) && is_array($aiOverviewData['text_blocks'])) {
+                        foreach ($aiOverviewData['text_blocks'] as $block) {
+                            if (is_string($block) && stripos($block, $parsedDomain) !== false) {
+                                $clientMentioned = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Update results
+                $results[$index]['search_api_status'] = 'Done';
+                $results[$index]['aio_status'] = $hasAio ? 'Yes' : 'No';
+                $results[$index]['client_mentioned_status'] = $domain ? ($clientMentioned ? 'Yes' : 'No') : 'N/A';
+                $results[$index]['has_ai_overview'] = $hasAio;
+                $results[$index]['client_mentioned'] = $clientMentioned;
+                
+                // Include a preview of AI Overview if available
+                if ($hasAio && $aiOverviewData) {
+                    $results[$index]['ai_preview'] = [
+                        'has_markdown' => !empty($aiOverviewData['markdown']),
+                        'text_blocks_count' => isset($aiOverviewData['text_blocks']) ? count($aiOverviewData['text_blocks']) : 0,
+                        'preview' => isset($aiOverviewData['markdown']) 
+                            ? $this->cleanUtf8String(substr($aiOverviewData['markdown'], 0, 200) . '...') 
+                            : (isset($aiOverviewData['text_blocks'][0]) 
+                                ? $this->cleanUtf8String(substr($aiOverviewData['text_blocks'][0], 0, 200) . '...') 
+                                : null)
+                    ];
+                }
+
+                $processedCount++;
+                
+                // Small delay to avoid rate limiting
+                usleep(500000); // 0.5 second delay between requests
+
+            } catch (\Exception $e) {
+                Log::error("Error processing keyword {$kw}: " . $e->getMessage());
+                $results[$index]['search_api_status'] = 'Error';
+                $results[$index]['aio_status'] = 'Error';
+                $results[$index]['client_mentioned_status'] = 'Error';
+                $results[$index]['error'] = $this->cleanUtf8String($e->getMessage());
+                $processedCount++;
+            }
+        }
+        
+        $aioCount = count(array_filter($results, function($item) {
+            return ($item['aio_status'] ?? '') === 'Yes';
+        }));
+        
+        $clientMentionedCount = count(array_filter($results, function($item) {
+            return ($item['client_mentioned_status'] ?? '') === 'Yes';
+        }));
+
+        // Generate pagination URLs
+        $pagination = $this->generatePagination($domain, $keyword, $page, $limit, $totalKeywords);
+
+        // Clean the entire response data before returning
+        $responseData = [
+            'success' => true,
+            'source_type' => $sourceType,
+            'source_value' => $this->cleanUtf8String($domain ?: $keyword),
+            'domain' => $domain ? $this->cleanUtf8String($domain) : null,
+            'keyword' => $keyword ? $this->cleanUtf8String($keyword) : null,
+            'page' => $page,
+            'limit' => $limit,
+            'total_keywords_available' => $totalKeywords,
+            'aio_found_on_page' => $aioCount,
+            'client_mentioned_on_page' => $clientMentionedCount,
+            'results' => $this->cleanUtf8Array($results),
+            'summary' => [
+                'keywords_with_aio' => $aioCount,
+                'keywords_with_client' => $clientMentionedCount,
+            ],
+            'pagination' => $pagination
+        ];
+
+        return response()->json($responseData);
+
+    } catch (\Exception $e) {
+        Log::error('AIO Domain API Error: ' . $e->getMessage());
+        return response()->json([
+            'success' => false,
+            'message' => 'Error: ' . $this->cleanUtf8String($e->getMessage())
+        ], 500);
+    }
+}
+
+// Add these helper methods to your controller class
+
+/**
+ * Clean UTF-8 string to remove malformed characters
+ */
+private function cleanUtf8String($string)
+{
+    if (!is_string($string)) {
+        return $string;
+    }
+    
+    // Remove invalid UTF-8 characters
+    $string = mb_convert_encoding($string, 'UTF-8', 'UTF-8');
+    
+    // Alternatively, use this more aggressive cleaning if needed:
+    // $string = iconv('UTF-8', 'UTF-8//IGNORE', $string);
+    
+    // Remove control characters except for newlines and tabs
+    $string = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $string);
+    
+    return $string;
+}
+
+/**
+ * Recursively clean UTF-8 strings in an array
+ */
+private function cleanUtf8Array($data)
+{
+    if (is_array($data)) {
+        foreach ($data as $key => $value) {
+            $data[$key] = $this->cleanUtf8Array($value);
+        }
+        return $data;
+    } elseif (is_string($data)) {
+        return $this->cleanUtf8String($data);
+    }
+    return $data;
+}
+
+    /**
+     * Generate pagination URLs
+     */
+    private function generatePagination($domain, $keyword, $currentPage, $limit, $totalKeywords)
+    {
+        $baseUrl = url('/api/aio_domain_api');
+        
+        // Build query parameters based on whether domain or keyword is provided
+        $queryParams = [];
+        if ($domain) {
+            $queryParams['domain'] = $domain;
+        } else {
+            $queryParams['keyword'] = $keyword;
+        }
+        $queryParams['page'] = $currentPage;
+        $queryParams['limit'] = $limit;
+        
+        $buildUrl = function($page) use ($baseUrl, $domain, $keyword, $limit) {
+            $params = [];
+            if ($domain) {
+                $params['domain'] = $domain;
+            } else {
+                $params['keyword'] = $keyword;
+            }
+            $params['page'] = $page;
+            $params['limit'] = $limit;
+            
+            return $baseUrl . '?' . http_build_query($params);
+        };
+        
+        $pagination = [
+            'current_page' => $currentPage,
+        ];
+        
+        // Previous page URL
+        if ($currentPage > 1) {
+            $pagination['prev_page_url'] = $buildUrl($currentPage - 1);
+        } else {
+            $pagination['prev_page_url'] = null;
+        }
+        
+        $pagination['next_page_url'] = $buildUrl($currentPage + 1);
+        
+        return $pagination;
+    }
 
 }

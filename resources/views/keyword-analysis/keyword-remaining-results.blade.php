@@ -209,7 +209,8 @@
                 success: function(response) {
                     console.log("Save Remaining Median Data automatically", response);
                     if (response.success) {
-                        showToast('Median keywords from remaining table saved successfully!', 'success');
+                        var tempName = response.temp_name || 'Unsaved Bucket';
+                        showToast('success', 'Auto-saved as "' + tempName + '". Use "Add to Bucket List" to rename it.');
                         
                         // Clear pending save
                         window.pendingMedianSave = null;

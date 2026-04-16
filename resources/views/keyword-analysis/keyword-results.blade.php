@@ -81,7 +81,7 @@
                             <td class="text-end" data-clicks="{{$keyword_item['clicks'] ?? 0 }}">{{ $keyword_item['clicks'] ?? 0 }}</td>
                             <td class="text-end" data-ctr="{{ $keyword_item['ctr'] ?? 0 }}">
                                 <span class="{{ $keyword_item['ctr'] > 5 ? 'text-success' : ($keyword_item['ctr'] > 2 ? 'text-warning' : 'text-danger') }}">
-                                    {{ $keyword_item['ctr'] }}%
+                                    {{ $keyword_item['ctr'] }}
                                 </span>
                             </td>
                             <td class="text-end" data-impressions="{{$keyword_item['impressions'] ?? 0}}">{{ $keyword_item['impressions'] ?? 0 }}</td>
@@ -197,6 +197,9 @@
     </div>
 </div>
 <script>
+    let client_property_id = $("input[name='client_property_id']").val();
+    let domainmanagement_id = $("input[name='domainmanagement_id']").val();
+            
     let autoSaveTriggered = false;
     let processingState = {
         keywordPlannerComplete: false,
@@ -775,7 +778,8 @@
             success: function(response) {
                 console.log("Save Median Data automatically", response);
                 if (response.success) {
-                    showToast('success', 'Median keywords saved successfully!');
+                    var tempName = response.temp_name || 'Unsaved Bucket';
+                    showToast('success', 'Auto-saved as "' + tempName + '". Use "Add to Bucket List" to rename it.');
 
                     // Clear pending save
                     window.pendingMedianSave = null;
@@ -1153,13 +1157,19 @@
             alert('Please select at least one keyword to save.');
             return;
         }
-        var medianName = prompt('📝 Name this Median Bucket:\n\nEnter a name to identify this set of median keywords (e.g. "Skin Care – Feb 2026").\nLeave blank to save without a name.', '');
+        var medianName = prompt('📝 Name this Median Bucket:\n\nEnter a name to identify this set of median keywords (e.g. "Skin Care – Feb 2026").', '');
 
         if (medianName === null) {
-            showToast('error', 'Ops! You need to mention the name for the median.');
+            // User cancelled the prompt
             return;
         }
-        medianName = medianName.trim() || null;
+
+        medianName = medianName.trim();
+
+        if (medianName === '') {
+            showToast('error', 'Please enter a name for this Median Bucket before saving.');
+            return;
+        }
 
         $('#saveToDbBtn').prop('disabled', true)
             .html('<i class="fas fa-spinner fa-spin me-2"></i>Saving...');

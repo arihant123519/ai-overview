@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Helpers\GeneralHelper;
+use App\Models\Client_propertiesModel;
 use DateTime;
 use DateTimeZone;
 use Exception;
@@ -83,9 +84,14 @@ class KeywordPlannerService
     /**
      * Generate keyword ideas based on seed keywords
      */
-    public function searchKeywords($keyword, $limit, $startDate = null, $endDate = null, $locationIds = ['2840'], $languageId = '1000')
+    public function searchKeywords($keyword, $limit, $startDate = null, $endDate = null, $locationIds = ['2840'], $languageId = '1000', $client_property_id = null)
     {
         try {
+
+            if($client_property_id !=null){
+                $this->customerId = Client_propertiesModel::where('id', $client_property_id)->value('customer_id');
+                $this->managerId = Client_propertiesModel::where('id', $client_property_id)->value('manager_id');
+            }
             $keywordPlanIdeaServiceClient = $this->googleAdsClient->getKeywordPlanIdeaServiceClient();
             
             $keywords = [$keyword];
@@ -210,7 +216,6 @@ class KeywordPlannerService
                 }
                 
             }
-            
             return $results;
             
         } catch (GoogleAdsException $googleAdsException) {

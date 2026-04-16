@@ -286,21 +286,37 @@ class DomainManagementController extends Controller
     {
         $insertData = [];
         $data = [];
-        $client_propertie = new Client_propertiesModel;
 
         $data = $request->all();
 
+        $indexedPages = $this->fetchGscUrls($data["domain"]);
+        if ($indexedPages instanceof \Illuminate\Http\JsonResponse) {
+            $indexedPages = json_decode($indexedPages->getContent(), true);
+        }
+
+        if (isset($indexedPages['status']) && $indexedPages['status'] == false) {
+            $errorMessage = 'Something went wrong';
+            if (!empty($indexedPages['error'])) {
+                $cleanError = str_replace('Error: ', '', $indexedPages['error']);
+                $decodedError = json_decode($cleanError, true);
+                if (isset($decodedError['error']['message'])) {
+                    $errorMessage = $decodedError['error']['message'];
+                }
+            }
+            return redirect('/clients')->with('error', $errorMessage);
+        }
+        
+        $client_propertie = new Client_propertiesModel;
         $client_propertie->type = $data["type"];
         $client_propertie->domainmanagement_id = $data["domainmanagement_id"];
         $client_propertie->domain = $data["domain"];
+        $client_propertie->keyword_mentioned_array = $data["keyword_mentioned_array"];
+        // $client_propertie->customer_id = $data['customer_id'];
+        // $client_propertie->manager_id = $data['manager_id'];
         $client_propertie->frequency = $data["frequency_update"];
-        
-        
+
         if ($client_propertie->save()) {
-            $indexedPages = $this->fetchGscUrls($data["domain"]);
-            
             foreach($indexedPages as $page) {
-                // dd($indexedPages);
                 $insertData[] = [
                     'client_properties_id'  => $client_propertie->id,
                     'domainmanagement_id' => $data['domainmanagement_id'],
@@ -351,11 +367,29 @@ class DomainManagementController extends Controller
     {
         $data = [];
         $data = $request->all();
+        $indexedPages = $this->fetchGscUrls($data["domain"]);
+        if ($indexedPages instanceof \Illuminate\Http\JsonResponse) {
+            $indexedPages = json_decode($indexedPages->getContent(), true);
+        }
+
+        if (isset($indexedPages['status']) && $indexedPages['status'] == false) {
+            $errorMessage = 'Something went wrong';
+            if (!empty($indexedPages['error'])) {
+                $cleanError = str_replace('Error: ', '', $indexedPages['error']);
+                $decodedError = json_decode($cleanError, true);
+                if (isset($decodedError['error']['message'])) {
+                    $errorMessage = $decodedError['error']['message'];
+                }
+            }
+            return redirect('/clients')->with('error', $errorMessage);
+        }
         $client_propertie = Client_propertiesModel::where("id", $data['id'])->first();
         
         $client_propertie->type = $data["type"];
         $client_propertie->domain = $data["domain"];
         $client_propertie->keyword_mentioned_array = $data["keyword_mentioned_array"];
+        // $client_propertie->customer_id = $data['customer_id'];
+        // $client_propertie->manager_id = $data['manager_id'];
         $client_propertie->frequency = $data["frequency_update"];
 
         if ($client_propertie->save()) {

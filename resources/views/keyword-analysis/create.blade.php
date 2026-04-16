@@ -510,6 +510,49 @@
         height: 6px;
         margin: 20px auto;
     }
+
+    /* ── Sync button ── */
+    .btn-sync {
+        border-radius: 5px;
+        padding: 7px 18px;
+        font-size: 14px;
+        font-weight: 500;
+        border: 2px solid #198754;
+        cursor: pointer;
+        transition: all .25s;
+        background: #fff;
+        color: #198754;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .btn-sync:hover:not(:disabled) {
+        background: #198754;
+        color: #fff;
+        box-shadow: 0 4px 10px rgba(25,135,84,.3);
+        transform: translateY(-1px);
+    }
+    .btn-sync:disabled {
+        opacity: .65;
+        cursor: not-allowed;
+    }
+    .btn-sync.syncing {
+        background: #198754;
+        color: #fff;
+        pointer-events: none;
+    }
+    .btn-sync .sync-spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid rgba(255,255,255,.4);
+        border-top-color: #fff;
+        border-radius: 50%;
+        animation: syncSpin .7s linear infinite;
+        display: none;
+    }
+    .btn-sync.syncing .sync-spinner { display: inline-block; }
+    /* .btn-sync.syncing .sync-icon    { display: none; } */
+    @keyframes syncSpin { to { transform: rotate(360deg); } }
 </style>
 <div class="page-content">
     <div class="container-fluid">
@@ -652,9 +695,20 @@
                                         value="<?php echo date('Y-m-d', strtotime('-1 day')) ?>"
                                         max="<?php echo date('Y-m-d', strtotime('-1 day')) ?>">
                                 </div>
-                                <div class="col-12">
-                                    <button class="btn btn-primary" id="show_result">Show the Result</button>
-                                    <a target="_blank" class="btn btn-warning" href="/median-results/{{$id}}">Median Results</a>
+                                <div class="col-12 d-flex flex-wrap align-items-center justify-content-between gap-2">
+                                    <div class="">
+                                        <button class="btn btn-primary" id="show_result">Show the Result</button>
+                                        <a target="_blank" class="btn btn-warning" href="/median-results/{{$id}}">Median Results</a>
+                                    </div>
+                                        <button id="syncQueueBtn"
+                                                class="btn-sync"
+                                                type="button"
+                                                onclick="triggerQueueSync(this)"
+                                                title="Re-process any pending keyword jobs in the queue">
+                                            <span class="sync-spinner"></span>
+                                            <i class="fas fa-sync-alt sync-icon"></i>
+                                            <span class="sync-label">Sync</span>
+                                        </button>
                                 </div>
                             </form>
                         </div>
@@ -703,6 +757,7 @@
 @section("jscontent")
 
 <script>
+    window.dataFetched = false; // guards against accidental refresh
     let currentOpenModal = null; 
     window.keywordPlannerPollingInterval = null;
     $(document).ready(function() {
@@ -848,7 +903,13 @@
             success: function(response) {
                 console.log(response);
                 $("#result_box").html(response.html);
-                
+                window.dataFetched = true;
+                setTimeout(function() {
+                    var syncBtn = document.getElementById('syncQueueBtn');
+                    if (syncBtn) {
+                        triggerQueueSync(syncBtn);
+                    }
+                }, 1500);
                 // Store session ID for status checking
                 sessionId = response.session_id;
                 
@@ -907,9 +968,15 @@
         });
     });
 
-    $(window).on('beforeunload', function() {
+    $(window).on('beforeunload', function(e) {
         if (statusCheckInterval) {
             clearInterval(statusCheckInterval);
+        }
+        if (window.pillsNavigationActive || window.dataFetched) {
+            const msg = 'You have unsaved keyword data. If you leave or refresh, all fetched data will be lost!';
+            e.preventDefault();
+            e.returnValue = msg;
+            return msg;
         }
     });
     function showFetchMoreModal(currentCount, remainingCount) {
@@ -939,16 +1006,17 @@
 
         if (isSet) {
             // SET (full columns exist)
+            // INSTEAD of reading textContent by cell index, use data attributes:
             keywordData = {
-                keyword: keyword,
-                monthly_search: row.cells[1].textContent.trim(),
-                competition: row.cells[2].textContent.trim(),
-                low_bid: row.cells[3].textContent.trim(),
-                high_bid: row.cells[4].textContent.trim(),
-                clicks: row.cells[5].textContent.trim(),
-                ctr: row.cells[6].textContent.trim().replace('%', ''),
-                impressions: row.cells[7].textContent.trim(),
-                position: positionCell.textContent.trim()
+                keyword:       keyword,
+                monthly_search: row.querySelector('td[data-avg_monthly_searches]')?.dataset.avg_monthly_searches || 0,
+                competition:   row.querySelector('td[data-competition]')?.dataset.competition || '',
+                low_bid:       row.querySelector('td[data-low_top_of_page_bid]')?.dataset.low_top_of_page_bid || 0,
+                high_bid:      row.querySelector('td[data-high_top_of_page_bid]')?.dataset.high_top_of_page_bid || 0,
+                clicks:        row.querySelector('td[data-clicks]')?.dataset.clicks || 0,
+                ctr:           row.querySelector('td[data-ctr]')?.dataset.ctr || 0,
+                impressions:   row.querySelector('td[data-impressions]')?.dataset.impressions || 0,
+                position:      row.querySelector('td[data-position]')?.dataset.position || 0,
             };
         } else {
             // NOT SET (limited columns)
@@ -1072,6 +1140,51 @@
 function resetButton(button) {
     button.disabled = false;
     button.innerHTML = 'Get AIO Result';
+}
+function triggerQueueSync(btn) {
+    if (!btn) btn = document.getElementById('syncQueueBtn');
+    if (!btn) return;
+ 
+    // Visual: enter syncing state
+    btn.disabled = true;
+    btn.classList.add('syncing');
+    const label = btn.querySelector('.sync-label');
+    if (label) label.textContent = 'Syncing…';
+ 
+    $.ajax({
+        url: "{{ route('sync.queue') }}",   // POST /sync-queue
+        type: 'POST',
+        data: { _token: "{{ csrf_token() }}" },
+ 
+        success: function(response) {
+            // Exit syncing state
+            btn.classList.remove('syncing');
+            btn.disabled = false;
+            if (label) label.textContent = 'Sync';
+ 
+            if (response.success) {
+                // Kick off an immediate status poll so the table refreshes
+                if (typeof checkAllKeywordStatuses === 'function') {
+                    setTimeout(checkAllKeywordStatuses, 500);
+                }
+ 
+                // Optional: brief green pulse to confirm success
+                btn.classList.add('btn-sync--done');
+                setTimeout(() => btn.classList.remove('btn-sync--done'), 2000);
+            } else {
+                console.warn('Sync warning:', response.message);
+                alert('Sync returned a warning: ' + (response.message || 'Unknown'));
+            }
+        },
+ 
+        error: function(xhr) {
+            btn.classList.remove('syncing');
+            btn.disabled = false;
+            if (label) label.textContent = 'Sync';
+            console.error('Sync error:', xhr.responseText);
+            alert('Queue sync failed. Check the server logs for details.');
+        }
+    });
 }
 
     
@@ -1477,7 +1590,7 @@ $(document).ready(function() {
                     <td class="text-end">${data.clicks}</td>
                     <td class="text-end">
                         <span class="${data.ctr > 5 ? 'text-success' : (data.ctr > 2 ? 'text-warning' : 'text-danger')}">
-                            ${data.ctr.toFixed(2)}%
+                            ${data.ctr.toFixed(2)}
                         </span>
                     </td>
                     <td class="text-end">${data.impressions.toLocaleString()}</td>
@@ -1602,32 +1715,37 @@ $(document).ready(function() {
     }
     
     function createPillsNavigation() {
+        window.pillsNavigationActive = true;
         const pillsHtml = `
             <div class="card mb-3">
-                <div class="card-body">
-                    <ul class="nav nav-pills" id="dynamicPillsNav" role="tablist">
-                        <!-- Keyword Results Tab - Shows ALL data -->
+                <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-2">
+ 
+                    {{-- Left side: tab pills --}}
+                    <ul class="nav nav-pills mb-0" id="dynamicPillsNav" role="tablist">
+ 
+                        {{-- Keyword Results Tab --}}
                         <li class="nav-item" role="presentation" id="pill-keywords-container">
-                            <button class="nav-pill btn btn-outline-primary me-2 mb-2 active" 
-                                    id="pill-keywords" 
-                                    type="button" 
+                            <button class="nav-pill btn btn-outline-primary me-2 active"
+                                    id="pill-keywords"
+                                    type="button"
                                     data-target="keywordsTableSection">
                                 <i class="fas fa-table me-1"></i>
                                 Keyword Results (All Data)
                             </button>
                         </li>
-                        
-                        <!-- Median Table Tab -->
+ 
+                        {{-- Median Table Tab --}}
                         <li class="nav-item" role="presentation" id="pill-median-container">
-                            <button class="nav-pill btn btn-outline-primary me-2 mb-2" 
-                                    id="pill-median" 
-                                    type="button" 
+                            <button class="nav-pill btn btn-outline-primary me-2"
+                                    id="pill-median"
+                                    type="button"
                                     data-target="medianTableSection">
                                 <i class="fas fa-calculator me-1"></i>
                                 Median Table
                             </button>
                         </li>
                     </ul>
+ 
                 </div>
             </div>
         `;
