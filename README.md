@@ -1,66 +1,112 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# AIO — AI Overview & Keyword Analysis Platform
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A Laravel application for tracking and analyzing Google **AI Overviews (AIO)** and search performance across multiple clients and domains. It combines Google Search Console, Google Ads Keyword Planner, and AI models (OpenAI / Gemini) to research keywords, generate analysis prompts, monitor AI Overview visibility, and keep results synced on a schedule.
 
-## About Laravel
+## Features
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+### Client & Domain Management
+- Manage multiple **clients** and their **domain properties** (CRUD).
+- Configure per-property settings including sync **frequency** (`DD:HH:MM` format).
+- Dynamic Google Ads **customer ID** and **manager ID** handling per client.
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+### Keyword Research & Analysis
+- Create and edit **keyword requests** per client property.
+- **Keyword cluster analysis** and grouping.
+- Auto-fetch keywords and pull suggestions from **Google Ads Keyword Planner**.
+- Enrich keywords with **Google Search Console (GSC)** data (clicks, impressions, URLs).
+- Parent/child keyword relationships with status checks.
+- **Median** calculation and display for keyword metrics.
+- Background queue processing for bulk keyword jobs, with status polling.
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+### AI Overview (AIO) Tracking
+- Fetch and extract **AI Overview results** for keywords.
+- Sync AIO data on demand or automatically and check AI status.
+- **AIO cluster analysis** and cached result retrieval.
+- Store organic results, related questions, and related searches.
 
-## Learning Laravel
+### AI Prompt Generation & Analysis
+- Generate and update **AIO analysis prompts** per property/keyword.
+- Specialized prompt types: **brand-neutral**, **visibility tracking**, and **competitor trigger**.
+- Run single-prompt analysis through **Gemini**, **ChatGPT/OpenAI**, and a **Search API**.
+- Store and display generated prompts and their responses.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+### AI Similarity & Comparison
+- **AI similarity analysis** between results.
+- Side-by-side **comparison analysis** per client/keyword.
 
-You may also try the [Laravel Bootcamp](https://bootcamp.laravel.com), where you will be guided through building a modern Laravel application from scratch.
+### History & Logging
+- **History Log** of analysis runs per domain/property/keyword.
+- Drill down into individual run logs and their extracted AIO results.
+- Priority flagging for sync ordering.
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains over 2000 video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+### Scheduled Sync (Cron)
+- `AutoSyncAIOforclient:send` command re-runs AIO syncs based on each property's configured frequency.
+- Reachable via the `/AutoSyncAIOforclient` route or scheduled as a cron job.
+- `CleanupStuckKeywordJobs` command clears stalled queue jobs.
 
-## Laravel Sponsors
+### Authentication
+- User registration/login via **Laravel UI** auth scaffolding.
+- **Google OAuth** integration and user profile management.
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+## Tech Stack
 
-### Premium Partners
+- **PHP** ^8.1, **Laravel** ^10
+- **Livewire** ^3.5
+- **Google API Client**, **Google Ads PHP SDK** (Keyword Planner, Search Console)
+- **OpenAI PHP Client** + **Gemini** API
+- **MySQL** database with **database** queue driver
+- **Vite** + Blade for the frontend
 
-- **[Vehikl](https://vehikl.com/)**
-- **[Tighten Co.](https://tighten.co)**
-- **[WebReinvent](https://webreinvent.com/)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel/)**
-- **[Cyber-Duck](https://cyber-duck.co.uk)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Jump24](https://jump24.co.uk)**
-- **[Redberry](https://redberry.international/laravel/)**
-- **[Active Logic](https://activelogic.com)**
-- **[byte5](https://byte5.de)**
-- **[OP.GG](https://op.gg)**
+## External Integrations
 
-## Contributing
+Configured via `.env` (see `.env.example`):
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+| Service | Env keys |
+|---|---|
+| Google Ads / Keyword Planner | `GOOGLE_ADS_KEY_PATH`, `DEVELOPER_TOKEN`, `MANAGER_CUSTOMER_ID`, `CUSTOMER_ID` |
+| Google Search Console | `GOOGLE_APPLICATION_CREDENTIALS` |
+| OpenAI | `OPENAI_API_KEY` |
+| Google Gemini | `GEMINI_KEY`, `GEMINI_MODEL_ID` |
+| AI Overview API | `AIO_TOKEN` |
+| YouTube Data API | `YOUTUBE_API_KEY` |
 
-## Code of Conduct
+## Getting Started
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```bash
+# 1. Install dependencies
+composer install
+npm install
 
-## Security Vulnerabilities
+# 2. Environment
+cp .env.example .env
+php artisan key:generate
+# fill in DB credentials and the API keys listed above
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+# 3. Database
+php artisan migrate
 
-## License
+# 4. Build assets & serve
+npm run dev
+php artisan serve
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+# 5. Run the queue worker (required for keyword/AIO jobs)
+php artisan queue:work
+```
+
+### Scheduled syncing
+
+Run the auto-sync command on a schedule (e.g. via cron or `php artisan schedule:work`):
+
+```bash
+php artisan AutoSyncAIOforclient:send
+```
+
+## Project Structure
+
+- `app/Http/Controllers/` — Domain, keyword, AIO prompt, similarity, history, and auth controllers
+- `app/Models/` — Clients, properties, keyword requests, AI overviews, prompts, history logs, etc.
+- `app/Services/` — Google Ads, Keyword Planner, and Search Console service wrappers
+- `app/Console/Commands/` — Scheduled sync and queue cleanup commands
+- `app/Jobs/` — Background keyword/AIO processing jobs
+- `routes/web.php` — Application routes
+- `resources/views/` — Blade templates (clients, keyword analysis, AIO prompts, history log, median, etc.)
